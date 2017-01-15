@@ -146,6 +146,8 @@ none_act.update({constquote[0]: lambda rc, b:
                b)})
 none_act.update({b: dummy
     for b in whitespace})
+none_act.update({list_b[0]: lambda rc, _: rc.recognized_stack.append(UBF_List())})
+none_act.update({append_b[0]: lambda rc, b: rc.list_append()})
 
 #int_act = act_all_notexp
 int_act = {b: lambda rc, b: rc.pool_up(b) for b in int_b}
@@ -295,4 +297,7 @@ class RecognitionStack:
         stack_head = self.recognized_stack.pop()
         assert type(stack_head) == UBF_Int
         return stack_head
+
+    def list_append(self):
+        self.recognized_stack[-2].append(self.recognized_stack.pop())
 
