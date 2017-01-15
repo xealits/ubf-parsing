@@ -107,14 +107,17 @@ end_b = b"$"
 # so much useless helper_func names..
 # that's why "metaprogramming" exists
 
-def raise_typeerror(e):
+def raise_typeerror(b):
     raise TypeError("Expected a control byte, not %x" % b)
 
 def run_coms(func_list, b):
     for f in func_list:
         f(b)
 
-act_all_notexp = {b: lambda _, _a: raise_typeerror for b in all_bytes}
+def dummy(*args):
+    pass
+
+act_all_notexp = {b: lambda _, b: raise_typeerror(b) for b in all_bytes}
 
 none_act = act_all_notexp
 none_act.update({b: lambda rc, b:
@@ -122,26 +125,34 @@ none_act.update({b: lambda rc, b:
               lambda b: rc.pool(bytes([b]))], # yep, that's how it's done, Python3, no byte for bytes
              b)
     for b in int_b + minus_b}) # Enter Int recognition
-none_act.update({tilde_b: # Enter-Load-and-Finish Bin recognition
+none_act.update({tilde_b[0]: # Enter-Load-and-Finish Bin recognition
     lambda rc, b: 
       run_coms([lambda _: rc.load_bin(rc.pop_int()), # load Int (from the stack) bytes from stream
                 # to properly finish the Bin recognition
                 # the next byte has to be checked if it is ~
                 lambda _: rc.check_final_tilde() ],
                b)})
-none_act.update({semanticquote:
-    lambda rc, _: rc.state("SemanticTag") })
-none_act.update({stringquote:
-    lambda rc, _: rc.state("Str")})
-none_act.update({constquote:
-    lambda rc, _: rc.state("Const")})
+none_act.update({semanticquote[0]: lambda rc, b:
+      run_coms([lambda _: rc.state("SemanticTag"),
+                lambda _: rc.pool(bytes())],
+               b)})
+none_act.update({stringquote[0]: lambda rc, b:
+      run_coms([lambda _: rc.state("Str"),
+                lambda _: rc.pool(bytes())],
+               b)})
+none_act.update({constquote[0]: lambda rc, b:
+      run_coms([lambda _: rc.state("Const"),
+                lambda _: rc.pool(bytes())],
+               b)})
+none_act.update({b: dummy
+    for b in whitespace})
 
 #int_act = act_all_notexp
 int_act = {b: lambda rc, b: rc.pool_up(b) for b in int_b}
 int_act.update({b: lambda rc, b:
     run_coms([lambda _: rc.recognized_stack.append(UBF_Int(rc._pool)), # Finish Int recognition
-              lambda _: rc.pool(None), # clear pool
-              lambda _: rc.state(None), # move to None state
+              lambda _: rc.pool(None),       # clear pool
+              lambda _: rc.state(None),      # move to None state
               lambda b: none_act[b](rc, b)], # decision in None state
             b)
     for b in bytes(set(all_bytes) - set(int_b))})
@@ -150,22 +161,22 @@ int_act.update({b: lambda rc, b:
 # -- without the escaping
 # and semantic_tag is just bytes
 sem_act = {b: lambda rc, b: rc.pool_up(b) for b in set(all_bytes) - set(semanticquote)}
-sem_act.update({semanticquote: lambda rc, b:
-    run_coms([lambda _: rc.recognized_stack.update_sematic_tag(rc.pool), # update semantic tag (bytes) in the last element of the rc
+sem_act.update({semanticquote[0]: lambda rc, b:
+    run_coms([lambda _: rc.update_sematic_tag(rc._pool), # update semantic tag (bytes) in the last element of the rc
               lambda _: rc.state(None),
               lambda _: rc.pool(None)],
              b)})
 
 str_act = {b: lambda rc, b: rc.pool_up(b) for b in set(all_bytes) - set(stringquote)}
-str_act.update({stringquote: lambda rc, b:
-    run_coms([lambda _: rc.recognized_stack.append(UBF_Str(rc.pool)),
+str_act.update({stringquote[0]: lambda rc, b:
+    run_coms([lambda _: rc.recognized_stack.append(UBF_Str(rc._pool)),
               lambda _: rc.state(None),
               lambda _: rc.pool(None)],
              b)})
 
 const_act = {b: lambda rc, b: rc.pool_up(b) for b in set(all_bytes) - set(constquote)}
-const_act.update({constquote: lambda rc, b:
-    run_coms([lambda _: rc.recognized_stack.append(UBF_Const(rc.pool)),
+const_act.update({constquote[0]: lambda rc, b:
+    run_coms([lambda _: rc.recognized_stack.append(UBF_Const(rc._pool)),
               lambda _: rc.state(None),
               lambda _: rc.pool(None)],
              b)})
@@ -237,7 +248,11 @@ class RecognitionStack:
             #print(self._pool)
 
             if b == end_b[0]:
-                return UBF_Tuple(self.recognized_stack), self.stream_bytes_read
+                assert self._state == None
+                out = UBF_Tuple(self.recognized_stack), self.stream_bytes_read
+                self.recognized_stack = []
+                self.stream_bytes_read = 0
+                return out
 
             self.actions[self._state][b](self, b)
             # state can be:
@@ -260,6 +275,7 @@ class RecognitionStack:
         self._pool += bytes([b]) # I wonder how it will work with tuples
 
     def update_sematic_tag(self, new_sem_tag):
+        assert type(new_sem_tag) == bytes
         self.recognized_stack[-1].semantic_tag = new_sem_tag
 
     def check_final_tilde(self):
