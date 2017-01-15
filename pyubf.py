@@ -70,15 +70,213 @@ class UBF_List(list, UBF_Element):
 
 
 
-# Parsers
+# UBF reserved characters
 
-all_bytes = set(range(256))
+'''
+all_bytes = set(bytes(range(256)))
 int_b   = set(b"0123456789")
+minus_b = set(b"-")
 tilde_b = set(b"~")
+stringquote = set(b'"')
+constquote  = set(b"'")
+semanticquote = set(b"`")
+whitespace = set(b" \t\n\r,")
+comment_b  = set(b"%")
+tuple_b = set(b"{}")
+list_b  = set(b"#")
+append_b = set(b"&")
+end_b = set(b"$")
+'''
 
-def ubf_int_parser(byte_stream, current_position):
-    x = b''.join(iter(lambda: byte_stream.read(1), all_bytes - int_b))
-    return UBF_Int(x), current_position + len(x), byte_stream
+all_bytes = bytes(range(256))
+int_b   = b"0123456789"
+minus_b = b"-"
+tilde_b = b"~"
+stringquote = b'"'
+constquote  = b"'"
+semanticquote = b"`"
+whitespace = b" \t\n\r,"
+comment_b  = b"%"
+tuple_open_b = b"{"
+tuple_end_b  = b"}"
+list_b  = b"#"
+append_b = b"&"
+end_b = b"$"
+
+# awesome state machinning without tail recursion and only-1-statement lambda
+# so much useless helper_func names..
+# that's why "metaprogramming" exists
+
+def raise_typeerror(e):
+    raise TypeError("Expected a control byte, not %x" % b)
+
+def run_coms(func_list, b):
+    for f in func_list:
+        f(b)
+
+act_all_notexp = {b: lambda _, _a: raise_typeerror for b in all_bytes}
+
+none_act = act_all_notexp
+none_act.update({b: lambda rc, b:
+    run_coms([lambda _: rc.state("Int"),
+              lambda b: rc.pool(bytes([b]))], # yep, that's how it's done, Python3, no byte for bytes
+             b)
+    for b in int_b + minus_b}) # Enter Int recognition
+none_act.update({tilde_b: # Enter-Load-and-Finish Bin recognition
+    lambda rc, b: 
+      run_coms([lambda _: rc.load_bin(rc.pop_int()), # load Int (from the stack) bytes from stream
+                # to properly finish the Bin recognition
+                # the next byte has to be checked if it is ~
+                lambda _: rc.check_final_tilde() ],
+               b)})
+none_act.update({semanticquote:
+    lambda rc, _: rc.state("SemanticTag") })
+none_act.update({stringquote:
+    lambda rc, _: rc.state("Str")})
+none_act.update({constquote:
+    lambda rc, _: rc.state("Const")})
+
+#int_act = act_all_notexp
+int_act = {b: lambda rc, b: rc.pool_up(b) for b in int_b}
+int_act.update({b: lambda rc, b:
+    run_coms([lambda _: rc.recognized_stack.append(UBF_Int(rc._pool)), # Finish Int recognition
+              lambda _: rc.pool(None), # clear pool
+              lambda _: rc.state(None), # move to None state
+              lambda b: none_act[b](rc, b)], # decision in None state
+            b)
+    for b in bytes(set(all_bytes) - set(int_b))})
+
+# for now let's do these strings simply 
+# -- without the escaping
+# and semantic_tag is just bytes
+sem_act = {b: lambda rc, b: rc.pool_up(b) for b in set(all_bytes) - set(semanticquote)}
+sem_act.update({semanticquote: lambda rc, b:
+    run_coms([lambda _: rc.recognized_stack.update_sematic_tag(rc.pool), # update semantic tag (bytes) in the last element of the rc
+              lambda _: rc.state(None),
+              lambda _: rc.pool(None)],
+             b)})
+
+str_act = {b: lambda rc, b: rc.pool_up(b) for b in set(all_bytes) - set(stringquote)}
+str_act.update({stringquote: lambda rc, b:
+    run_coms([lambda _: rc.recognized_stack.append(UBF_Str(rc.pool)),
+              lambda _: rc.state(None),
+              lambda _: rc.pool(None)],
+             b)})
+
+const_act = {b: lambda rc, b: rc.pool_up(b) for b in set(all_bytes) - set(constquote)}
+const_act.update({constquote: lambda rc, b:
+    run_coms([lambda _: rc.recognized_stack.append(UBF_Const(rc.pool)),
+              lambda _: rc.state(None),
+              lambda _: rc.pool(None)],
+             b)})
+
+default_stack_actions = {
+        None: none_act,
+        "Int": int_act,
+        # "Bin": bin_act, # Bin recognition is done by the recognition stack object method in 1 go
+        "SemanticTag": sem_act,
+        "Str": str_act,
+        "Const": const_act
+        }
 
 
+# Recognition stacks
+
+class RecognitionStack:
+    """
+    TODO: initialize with registers
+
+    Keeps a stack (list) of recognized UBF elements
+    and a pool (bytes) for the current element.
+    Reeds bytes stream, updating the current element pool or the stack.
+
+    This class implements no-current-element recognition
+    """
+
+    """
+    Needed rc methods:
+        update_semantic_tag(bytes)
+        check_final_tilde()
+        load_bin(UBF_Int)
+        pop_int() --- check UBF_Int
+    """
+
+    def __init__(self, stream = None, stream_bytes_read = 0):
+        self.stream = stream
+        self.stream_bytes_read = stream_bytes_read
+        self.recognized_stack = []
+        self._state = None # no element recognition was started
+        self._pool  = None # no current elements being recognized
+        self.actions = default_stack_actions
+        #self.current_pool = None
+        #self.current_recognition = (None, None)
+        # will be (type-of-element, its'-pool)
+        # the pool is bytes for some, or list for UBF tuple
+        # UBF list is populated by & with appending to previous element in the stack
+
+        # OR this will be done with classes
+
+    def recognize(self, stream = None, stream_bytes_read = 0):
+        if stream:
+            self.stream = stream
+            self.stream_bytes_read = 0
+
+        if stream_bytes_read:
+            self.stream_bytes_read = stream_bytes_read
+
+        # without tail recursion describing states sucks
+        while True:
+            b = self.stream.read(1)
+            if not b:
+                # in case we don't block on empty stream
+                return UBF_Tuple(self.recognized_stack), self.stream_bytes_read
+            else:
+                b = b[0]
+            self.stream_bytes_read += 1
+
+            #print(self._pool)
+
+            if b == end_b[0]:
+                return UBF_Tuple(self.recognized_stack), self.stream_bytes_read
+
+            self.actions[self._state][b](self, b)
+            # state can be:
+            #    None
+            #    Int
+            #    Str
+            #    Bin
+            #    Const
+            #    SemanticTag
+            #    Tuple (or separately)
+            #    --- all change/update behaviour of None
+
+    def state(self, new_state):
+        self._state = new_state
+
+    def pool(self, init_pool):
+        self._pool = init_pool # bytes([init_pool])
+
+    def pool_up(self, b):
+        self._pool += bytes([b]) # I wonder how it will work with tuples
+
+    def update_sematic_tag(self, new_sem_tag):
+        self.recognized_stack[-1].semantic_tag = new_sem_tag
+
+    def check_final_tilde(self):
+        assert self._state is None
+        b = self.stream.read(1)[0]
+        self.stream_bytes_read += 1
+
+        if b != tilde_b:
+            self.actions[self._state][b](self, b)
+
+    def load_bin(self, length):
+        self.recognized_stack.append(UBF_Bin(self.stream.read(length)))
+        self.stream_bytes_read += length
+
+    def pop_int(self):
+        # --- check UBF_Int
+        stack_head = self.recognized_stack.pop()
+        assert type(stack_head) == UBF_Int
+        return stack_head
 
