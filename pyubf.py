@@ -87,7 +87,7 @@ class RecognitionStack_None:
     Reeds bytes stream, updating the current element pool or the stack.
     """
 
-    def __init__(self, stream = None: "byte_stream", stream_bytes_read = 0: int, in_tuple = False: bool):
+    def __init__(self, stream: "byte_stream" = None, stream_bytes_read: int = 0, in_tuple: bool = False):
         #print("rec stac in_tuple = %s" % in_tuple)
         self.stream = stream
         self.stream_bytes_read = stream_bytes_read
@@ -104,7 +104,7 @@ class RecognitionStack_None:
         # the pool is bytes for some, or list for UBF tuple
         # UBF list is populated by & with appending to previous element in the stack
 
-    def recognize(self, stream = None: "byte_stream", stream_bytes_read = 0: int):
+    def recognize(self, stream: "byte_stream" = None, stream_bytes_read: int = 0):
         """recognize(self, stream = None, stream_bytes_read = 0)
 
         Recognizes a full message from the given stream.
