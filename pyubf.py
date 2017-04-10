@@ -1,3 +1,4 @@
+
 """
 UBF parsed in Python 3
 
@@ -25,8 +26,11 @@ UBF parsed in Python 3
       --- внутри-тапловый стэк и стэк "УБФ документа/месседжа",
       т.е. тот в котором может быть только 1 элемент до знака $
       (нужны будут дополнительные проверки для этого)
+
+A symbol type. Symbols differ from strings in that you can test equality by comparing a pointer.
 """
 
+import io
 
 
 # UBF elements
@@ -87,9 +91,15 @@ class RecognitionStack_None:
     Reeds bytes stream, updating the current element pool or the stack.
     """
 
-    def __init__(self, stream: "byte_stream" = None, stream_bytes_read: int = 0, in_tuple: bool = False):
+    def __init__(self, stream: "byte_stream" = None, stream_bytes_read: int = 0, in_tuple: bool = False, end_bytes: bytes = end_b):
         #print("rec stac in_tuple = %s" % in_tuple)
-        self.stream = stream
+        if type(stream) is bytes:
+            self.stream = io.BytesIO(stream)
+        else:
+            self.stream = stream
+
+        self.end_bytes = end_bytes
+
         self.stream_bytes_read = stream_bytes_read
         self.recognized_stack = []
         #self.actions = actions
@@ -159,7 +169,13 @@ class RecognitionStack_None:
 
         assert type(byte) == bytes
 
-        if byte in int_b + minus_b:
+
+        if byte in self.end_bytes:
+            assert not self.in_tuple
+            # "Did not expect end of message $ inside tuple, stream %s at %d" % (rc.stream, rc.stream_bytes_read)
+            self.recognition_ended = True
+
+        elif byte in int_b + minus_b:
             # enter Int recognition
             self.__class__ = RecognitionStack_Int
             self._pool = byte
@@ -177,8 +193,17 @@ class RecognitionStack_None:
                 self.act(b)
 
         elif byte == semanticquote:
-            self.__class__ = RecognitionStack_SemanticTag
-            self._pool = bytes()
+            # recognize the stack until the next semantic quote
+            # add the UBF element as semantic tag in current recognition
+            element, stream_bytes_read = RecognitionStack(self.stream, end_bytes = end_b + semanticquote).recognize()
+            self.recognized_stack[-1].semantic_tag = element
+            self.stream_bytes_read += stream_bytes_read # adding bytes read for tag
+            # so it will end with ` only,
+            # end-message character goes in:
+            #   in principle several UBF messages can be in the tag
+            #   but there is a check for only 1 UBF object..
+            # the state RecognitionStack_SemanticTag is not needed
+
         elif byte == stringquote:
             self.__class__ = RecognitionStack_Str
             self._pool = bytes()
@@ -194,7 +219,7 @@ class RecognitionStack_None:
         elif byte == append_b:
             self.recognized_stack[-2].append(self.recognized_stack.pop())
 
-        elif byte == end_b:
+        elif byte in self.end_bytes:
             assert not self.in_tuple
             # "Did not expect end of message $ inside tuple, stream %s at %d" % (rc.stream, rc.stream_bytes_read)
             self.recognition_ended = True
@@ -202,9 +227,10 @@ class RecognitionStack_None:
         elif byte == tuple_open_b:
             # the line is long indeed
             # I'm making point that the recognition stack is temporary
-            tuple_element, stream_bytes_read = RecognitionStack(self.stream, self.stream_bytes_read, in_tuple = True).recognize()
+            tuple_element, stream_bytes_read = RecognitionStack(self.stream, in_tuple = True).recognize()
             self.recognized_stack.append(tuple_element)
-            self.stream_bytes_read = stream_bytes_read
+            self.stream_bytes_read += stream_bytes_read # adding bytes read for tuple
+
         elif byte == tuple_end_b:
             assert self.in_tuple
             self.recognition_ended = True
@@ -227,20 +253,6 @@ class RecognitionStack_Int:
             self._pool = None
             self.__class__ = RecognitionStack_None
             self.act(byte)
-
-
-class RecognitionStack_SemanticTag:
-    def act(self, byte: bytes):
-        if byte != semanticquote:
-            # TODO: add escaping
-            self._pool += byte
-        else:
-            # finish the SemanticTag recognition
-            # update the semantic tag of the last element in the stack
-            # return to None state
-            self.recognized_stack[-1].semantic_tag = self._pool
-            self._pool = None
-            self.__class__ = RecognitionStack_None
 
 class RecognitionStack_Str:
     def act(self, byte: bytes):
@@ -270,4 +282,11 @@ class RecognitionStack_Const:
             self._pool = None
             self.__class__ = RecognitionStack_None
 
+
+test_UBF_bytestreams = [ b'"foo" `{124 "bar" `4~ab01~`}`' ]
+
+if __name__ == '__main__':
+    print("running tests:")
+    for s in test_UBF_bytestreams:
+        print(RecognitionStack(s).recognize())
 
